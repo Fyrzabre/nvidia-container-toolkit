@@ -17,6 +17,9 @@
 package commands
 
 import (
+	"context"
+	"strings"
+
 	"github.com/urfave/cli/v3"
 
 	"github.com/NVIDIA/nvidia-container-toolkit/cmd/nvidia-cdi-hook/chmod"
@@ -50,4 +53,47 @@ func IssueUnsupportedHookWarning(logger logger.Interface, c *cli.Command) {
 	} else {
 		logger.Warningf("Unsupported CDI hook: %v", args[0])
 	}
+}
+
+// ConfigureCDIHookCommand configures a base command with supported CDI
+// hooks and error handling for unsupported hooks.
+func ConfigureCDIHookCommand(base *cli.Command, logger logger.Interface) *cli.Command {
+	// We set the default action for the command to issue a warning and
+	// exit with no error.
+	// This means that if an unsupported hook is run, a container will not
+	// fail to launch. An unsupported hook could be the result of a CDI
+	// specification referring to a new hook that is not yet supported by an
+	// older NVIDIA Container Toolkit version or a hook that has been removed
+	// in newer version.
+	base.Action = func(ctx context.Context, cmd *cli.Command) error {
+		IssueUnsupportedHookWarning(logger, cmd)
+		return nil
+	}
+	// Handle unrecognized commands when help is requested (e.g., help
+	// unknowncommand)
+	base.CommandNotFound = func(ctx context.Context, cmd *cli.Command, commandName string) {
+		IssueUnsupportedHookWarning(logger, cmd)
+	}
+	// Handle usage errors. For unrecognized commands with flags, we suppress
+	// the error to maintain backwards compatibility.
+	base.OnUsageError = func(ctx context.Context, cmd *cli.Command, err error, isSubcommand bool) error {
+		// If this is a flag parsing error for an unrecognized command,
+		// suppress it and let the default Action handle it
+		errMsg := err.Error()
+		if strings.HasPrefix(errMsg, "flag provided but not defined: -") {
+			// Check if the first argument is an unrecognized command
+			args := cmd.Args().Slice()
+			if len(args) > 0 && cmd.Command(args[0]) == nil {
+				// This is an unrecognized hook with flags - issue a warning
+				// and let the default Action handle it
+				logger.Warningf("Unsupported CDI hook: %v", args[0])
+				return nil
+			}
+		}
+		// For other usage errors, return the error as-is
+		return err
+	}
+	base.Commands = New(logger)
+
+	return base
 }
